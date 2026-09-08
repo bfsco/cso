@@ -13,45 +13,109 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install playwright@1.55.0
-      - run: npx playwright install --with-deps chromium
-      - name: Render PDFs
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Render PDFs from source HTML
         run: |
           node <<'NODE'
-          const fs=require('fs'), path=require('path'), {chromium}=require('playwright');
-          function walk(dir){
-            let out=[];
-            for(const ent of fs.readdirSync(dir,{withFileTypes:true})){
-              if(ent.name==='.git'||ent.name==='node_modules') continue;
-              const p=path.join(dir,ent.name);
-              if(ent.isDirectory()) out=out.concat(walk(p));
-              else if(ent.isFile() && ent.name.endsWith('-source.html')) out.push(p);
+          const fs = require('fs');
+          const path = require('path');
+          const { chromium } = require('playwright');
+
+          function walk(dir) {
+            let out = [];
+            for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (ent.name === '.git' || ent.name === 'node_modules') continue;
+              const p = path.join(dir, ent.name);
+              if (ent.isDirectory()) out = out.concat(walk(p));
+              else if (ent.isFile() && ent.name.endsWith('-source.html')) out.push(p);
             }
             return out;
           }
-          (async()=>{
-            const browser=await chromium.launch({headless:true});
-            for(const file of walk('.')){
-              const dir=path.dirname(file);
-              const base=path.basename(file).replace(/-source.html$/,'');
-              const pdfPath=path.join(dir,base+'.pdf');
-              const page=await browser.newPage({viewport:{width:794,height:1123},deviceScaleFactor:1});
-              await page.goto('file://'+path.resolve(file),{waitUntil:'networkidle'});
-              await page.emulateMedia({media:'print'});
-              await page.pdf({path:pdfPath,format:'A4',printBackground:true,preferCSSPageSize:true,margin:{top:'0',right:'0',bottom:'0',left:'0'}});
-              await page.close();
+
+          async function waitForImages(page) {
+            await page.evaluate(async () => {
+              if (document.fonts && document.fonts.ready) await document.fonts.ready;
+              const imgs = Array.from(document.images || []);
+              await Promise.all(imgs.map(img => {
+                if (img.complete) return Promise.resolve();
+                return new Promise(resolve => {
+                  img.addEventListener('load', resolve, { once: true });
+                  img.addEventListener('error', resolve, { once: true });
+                });
+              }));
+            });
+          }
+
+          (async () => {
+            const files = walk('.');
+            if (!files.length) {
+              console.log('No *-source.html files found.');
+              process.exit(0);
             }
-            await browser.close();
-          })();
+
+            const browser = await chromium.launch({ headless: true });
+            try {
+              for (const file of files) {
+                const dir = path.dirname(file);
+                const base = path.basename(file).replace(/-source\.html$/, '');
+                const pdfPath = path.join(dir, base + '.pdf');
+
+                const page = await browser.newPage({
+                  viewport: { width: 794, height: 1123 },
+                  deviceScaleFactor: 1
+                });
+
+                await page.goto('file://' + path.resolve(file), {
+                  waitUntil: 'load'
+                });
+                await waitForImages(page);
+                await page.emulateMedia({ media: 'print' });
+                await page.waitForTimeout(300);
+
+                // Use the document's own A4 print CSS. Do not scale or crop it.
+                await page.pdf({
+                  path: pdfPath,
+                  width: '210mm',
+                  height: '297mm',
+                  printBackground: true,
+                  preferCSSPageSize: true,
+                  margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+                  scale: 1,
+                  pageRanges: ''
+                });
+
+                await page.close();
+                console.log('Created ' + pdfPath);
+              }
+            } finally {
+              await browser.close();
+            }
+          })().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
           NODE
-      - name: Commit PDFs
+
+      - name: Commit generated PDFs
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add '**/*.pdf'
-          git diff --cached --quiet || git commit -m 'Build security permit PDFs'
-          git push
+          git add --all -- '*.pdf'
+          if git diff --cached --quiet; then
+            echo 'No PDF changes to commit.'
+          else
+            git commit -m 'Build security permit PDFs'
+            git push
+          fi
