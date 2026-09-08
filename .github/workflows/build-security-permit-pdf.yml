@@ -1,0 +1,57 @@
+name: Build security permit PDFs
+
+on:
+  push:
+    paths:
+      - '**/*-source.html'
+      - '.github/workflows/build-security-permit-pdf.yml'
+  workflow_dispatch:
+
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install playwright@1.55.0
+      - run: npx playwright install --with-deps chromium
+      - name: Render PDFs
+        run: |
+          node <<'NODE'
+          const fs=require('fs'), path=require('path'), {chromium}=require('playwright');
+          function walk(dir){
+            let out=[];
+            for(const ent of fs.readdirSync(dir,{withFileTypes:true})){
+              if(ent.name==='.git'||ent.name==='node_modules') continue;
+              const p=path.join(dir,ent.name);
+              if(ent.isDirectory()) out=out.concat(walk(p));
+              else if(ent.isFile() && ent.name.endsWith('-source.html')) out.push(p);
+            }
+            return out;
+          }
+          (async()=>{
+            const browser=await chromium.launch({headless:true});
+            for(const file of walk('.')){
+              const dir=path.dirname(file);
+              const base=path.basename(file).replace(/-source.html$/,'');
+              const pdfPath=path.join(dir,base+'.pdf');
+              const page=await browser.newPage({viewport:{width:794,height:1123},deviceScaleFactor:1});
+              await page.goto('file://'+path.resolve(file),{waitUntil:'networkidle'});
+              await page.emulateMedia({media:'print'});
+              await page.pdf({path:pdfPath,format:'A4',printBackground:true,preferCSSPageSize:true,margin:{top:'0',right:'0',bottom:'0',left:'0'}});
+              await page.close();
+            }
+            await browser.close();
+          })();
+          NODE
+      - name: Commit PDFs
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add '**/*.pdf'
+          git diff --cached --quiet || git commit -m 'Build security permit PDFs'
+          git push
