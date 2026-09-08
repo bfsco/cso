@@ -81,19 +81,26 @@ jobs:
                   waitUntil: 'load'
                 });
                 await waitForImages(page);
+                // PDF export only: keep the existing document layout untouched.
+                // Do not introduce a second scale or force a different paper size.
                 await page.emulateMedia({ media: 'print' });
+                await page.addStyleTag({content: `
+                  @page { size: A4 portrait; margin: 0; }
+                  html, body { margin: 0 !important; padding: 0 !important; }
+                  .page { width: 210mm !important; height: 297mm !important; min-height: 297mm !important; max-height: 297mm !important; margin: 0 !important; box-shadow: none !important; }
+                  .page + .page { break-before: page !important; page-break-before: always !important; }
+                `});
                 await page.waitForTimeout(300);
 
-                // Use the document's own A4 print CSS. Do not scale or crop it.
+                // Let the source document's own A4 CSS define the geometry.
+                // No resizing, zooming, screenshotting, or image conversion.
                 await page.pdf({
                   path: pdfPath,
-                  width: '210mm',
-                  height: '297mm',
+                  format: 'A4',
                   printBackground: true,
                   preferCSSPageSize: true,
-                  margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
-                  scale: 1,
-                  pageRanges: ''
+                  margin: { top: '0', right: '0', bottom: '0', left: '0' },
+                  scale: 1
                 });
 
                 await page.close();
