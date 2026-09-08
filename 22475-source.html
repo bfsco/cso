@@ -651,7 +651,7 @@ input:focus, textarea:focus { background: rgba(255,235,100,0.15); }
 
     <!-- QR + Info Table -->
     <div class="info-table-row">
-      <div class="overlay-slot qr-slot has-image" id="qrSlotP1" data-slot="qr-p1" style="position:relative; top:0; left:0; width:25mm; height:25mm; flex:0 0 25mm;"><img src="data:image/gif;base64,R0lGODdhHQAdAIAAAAAAAP///ywAAAAAHQAdAAACk4QPkWgazs6bCVJV3cR49Zd5UEOSoPZZUilWbqOWmzXSKBh5utoh87aA4X6XUKgmdMWUkmHQSMvgWkGOUiNMvZLFZ/PEoUhFtShw/AVqZ9WL+tyeOsXh8snkVrOmMq/Vj0WXInf386UTx4dHtAJz9ZFT5RhIlkV5c1i4MlSW09ViuMMwgijneJWGQuV2GFG3heVYAAA7" width="29" height="29" alt="QR CODE" style="width: 100%; height: 100%; object-fit: contain; display: block;"></div>
+      <div class="overlay-slot qr-slot has-image" id="qrSlotP1" data-slot="qr-p1" style="position:relative; top:0; left:0; width:25mm; height:25mm; flex:0 0 25mm;"><img src="data:image/gif;base64,R0lGODdhHQAdAIAAAAAAAP///ywAAAAAHQAdAAACk4QPccHZrNCCqppKnYN3pR5poPeBzRRZYeqpbGp123N+mMtJo2qXEgW8wHDB2sT20oREvpwoN8y4ej0i7leVToU12pNjHCKAMZRvYxorZcKW9shaw8wP9LKuK4HZy2Z5xiSm51YWNmaYh0JmpgNlRKh3EgMmpYQReVOIdNd31ERlyZPxSXkWx0k5mibTuTOJxBVQAAA7" width="29" height="29" alt="QR CODE" style="width: 100%; height: 100%; object-fit: contain; display: block;"></div>
       <table class="info-table">
           <tbody><tr>
             <td class="label">رقم التصريح الأمني</td>
@@ -1108,53 +1108,117 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install playwright@1.55.0
-      - run: npx playwright install --with-deps chromium
-      - name: Render PDFs
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Render PDFs from source HTML
         run: |
           node <<'NODE'
-          const fs=require('fs'), path=require('path'), {chromium}=require('playwright');
-          function walk(dir){
-            let out=[];
-            for(const ent of fs.readdirSync(dir,{withFileTypes:true})){
-              if(ent.name==='.git'||ent.name==='node_modules') continue;
-              const p=path.join(dir,ent.name);
-              if(ent.isDirectory()) out=out.concat(walk(p));
-              else if(ent.isFile() && ent.name.endsWith('-source.html')) out.push(p);
+          const fs = require('fs');
+          const path = require('path');
+          const { chromium } = require('playwright');
+
+          function walk(dir) {
+            let out = [];
+            for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (ent.name === '.git' || ent.name === 'node_modules') continue;
+              const p = path.join(dir, ent.name);
+              if (ent.isDirectory()) out = out.concat(walk(p));
+              else if (ent.isFile() && ent.name.endsWith('-source.html')) out.push(p);
             }
             return out;
           }
-          (async()=>{
-            const browser=await chromium.launch({headless:true});
-            for(const file of walk('.')){
-              const dir=path.dirname(file);
-              const base=path.basename(file).replace(/-source\.html$/,'');
-              const pdfPath=path.join(dir,base+'.pdf');
-              const page=await browser.newPage({viewport:{width:794,height:1123},deviceScaleFactor:1});
-              await page.goto('file://'+path.resolve(file),{waitUntil:'networkidle'});
-              await page.emulateMedia({media:'print'});
-              await page.pdf({path:pdfPath,format:'A4',printBackground:true,preferCSSPageSize:true,margin:{top:'0',right:'0',bottom:'0',left:'0'}});
-              await page.close();
+
+          async function waitForImages(page) {
+            await page.evaluate(async () => {
+              if (document.fonts && document.fonts.ready) await document.fonts.ready;
+              const imgs = Array.from(document.images || []);
+              await Promise.all(imgs.map(img => {
+                if (img.complete) return Promise.resolve();
+                return new Promise(resolve => {
+                  img.addEventListener('load', resolve, { once: true });
+                  img.addEventListener('error', resolve, { once: true });
+                });
+              }));
+            });
+          }
+
+          (async () => {
+            const files = walk('.');
+            if (!files.length) {
+              console.log('No *-source.html files found.');
+              process.exit(0);
             }
-            await browser.close();
-          })();
+
+            const browser = await chromium.launch({ headless: true });
+            try {
+              for (const file of files) {
+                const dir = path.dirname(file);
+                const base = path.basename(file).replace(/-source\\.html$/, '');
+                const pdfPath = path.join(dir, base + '.pdf');
+
+                const page = await browser.newPage({
+                  viewport: { width: 794, height: 1123 },
+                  deviceScaleFactor: 1
+                });
+
+                await page.goto('file://' + path.resolve(file), {
+                  waitUntil: 'load'
+                });
+                await waitForImages(page);
+                await page.emulateMedia({ media: 'print' });
+                await page.waitForTimeout(300);
+
+                // Use the document's own A4 print CSS. Do not scale or crop it.
+                await page.pdf({
+                  path: pdfPath,
+                  width: '210mm',
+                  height: '297mm',
+                  printBackground: true,
+                  preferCSSPageSize: true,
+                  margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+                  scale: 1,
+                  pageRanges: ''
+                });
+
+                await page.close();
+                console.log('Created ' + pdfPath);
+              }
+            } finally {
+              await browser.close();
+            }
+          })().catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
           NODE
-      - name: Commit PDFs
+
+      - name: Commit generated PDFs
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add '**/*.pdf'
-          git diff --cached --quiet || git commit -m 'Build security permit PDFs'
-          git push
+          git add --all -- '*.pdf'
+          if git diff --cached --quiet; then
+            echo 'No PDF changes to commit.'
+          else
+            git commit -m 'Build security permit PDFs'
+            git push
+          fi
 `;
   async function publish(){
     const st=$('pubStatus'),btn=$('pubBtn'); btn.disabled=true; st.textContent='⏳ جاري تجهيز QR ورفع الملفات...';
     try{
-      const token=$('pubToken').value.trim(), repo=$('pubRepo').value.trim(), base=$('pubBase').value.trim().replace(/\/$/,''); let folder=$('pubFolder').value.trim().replace(/^\/+|\/+$/g,'');
+      const token=$('pubToken').value.trim(), repo=$('pubRepo').value.trim(), base=$('pubBase').value.trim().replace(/\/+$/,'').replace(/\.(html|pdf)$/i,''); let folder=$('pubFolder').value.trim().replace(/^\/+|\/+$/g,'');
       if(!token) throw new Error('ألصق GitHub Token أولاً.'); if(!/^[^/]+\/[^/]+$/.test(repo)) throw new Error('صيغة المستودع يجب أن تكون owner/repo.');
       const d=permitData(); const name=($('pubFile').value.trim()||d.permit).replace(/[^\w\-]+/g,'_'); if(!name) throw new Error('رقم التصريح فارغ.');
       const dir=folder?folder+'/':''; const landingUrl=base+'/'+dir+encodeURIComponent(name)+'.html'; const pdfUrl=base+'/'+dir+encodeURIComponent(name)+'.pdf'; const sourcePath=dir+name+'-source.html'; const landingPath=dir+name+'.html';
@@ -1174,7 +1238,7 @@ jobs:
       }
       await putFile(repo,landingPath,b64unicode(landing),token,'Publish security permit welcome page '+d.permit);
       await putFile(repo,sourcePath,b64unicode(source),token,'Publish security permit source '+d.permit);
-      st.innerHTML='✅ تم الرفع وبدأ إنشاء PDF.\nصفحة الترحيب: <a target="_blank" href="'+landingUrl+'">'+landingUrl+'</a>\nPDF: <a target="_blank" href="'+pdfUrl+'">'+pdfUrl+'</a>\n\n⏳ انتظر اكتمال GitHub Actions حتى يصبح الـPDF جاهزاً.\nQR الآن يشير إلى صفحة الترحيب.';
+      st.innerHTML='✅ تم النشر بنجاح وبدأ بناء الـPDF.\nصفحة الترحيب: <a target="_blank" href="'+landingUrl+'">'+landingUrl+'</a>\nPDF: <a target="_blank" href="'+pdfUrl+'">'+pdfUrl+'</a>\n\n⏳ انتظر اكتمال GitHub Actions قبل فتح الـPDF لأول مرة.\nQR الآن يشير إلى صفحة الترحيب، وزر التحميل داخلها يفتح الـPDF.';
     }catch(e){st.textContent='❌ '+e.message}finally{btn.disabled=false}
   }
   $('pubBtn').addEventListener('click',publish);
