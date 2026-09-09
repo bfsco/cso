@@ -44,7 +44,7 @@ jobs:
               await page.evaluate(async()=>{
                 if(document.fonts && document.fonts.ready) await document.fonts.ready;
                 const imgs=[...document.images];
-                await Promise.all(imgs.map(img=>img.complete?Promise.resolve():new Promise(r=>{img.addEventListener('load',r,{once:true});img.addEventListener('error',r,{once:true});}))));
+                await Promise.all(imgs.map(img=>img.complete?Promise.resolve():new Promise(r=>{img.addEventListener('load',r,{once:true});img.addEventListener('error',r,{once:true});})));
               });
               await page.emulateMedia({media:'print'});
               await page.pdf({
